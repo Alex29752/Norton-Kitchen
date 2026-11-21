@@ -1453,6 +1453,9 @@ document.addEventListener("click", function(e){
   if(e.target.id==="ghSync"){ closeSheet(); ghPull(true); return }
   if(e.target.id==="ghOut"){ try{ localStorage.removeItem("nk_token") }catch(x){} location.reload(); return }
   if(e.target.id==="ghGo"){ ghConnect(); return }
+  if(e.target.id==="ghPwGo"){ ghPwGo(); return }
+  if(e.target.id==="ghSetGo"){ ghSetGo(); return }
+  if(e.target.id==="ghReSetup"){ GH.mode="setup"; GH.error=""; render(); return }
   if(e.target.id==="dlCSV"){ saveCSVFile(); return }
   if(e.target.id==="copyCSV"){ copyCSV(); return }
   if(e.target.id==="impCSV"){ $("#csvInput").click(); return }
@@ -1702,21 +1705,29 @@ function imgAttr(p){
 }
 function ghGateHTML(){
   if(GH.token&&!GH.error) return '<div class="empty" style="padding-top:60px">Opening your recipes&hellip;</div>';
-  return '<div class="gate"><h2>Welcome to Norton Kitchen</h2>'
-   +'<p class="sub">Your recipes and meal plan are kept in your private GitHub repo <b>'+esc(GH.owner+"/"+GH.repo)+'</b>. '
-   +'Paste your access code once on each device and everything stays in step between them.</p>'
-   +(GH.error?'<div class="note">'+esc(GH.error)+'</div>':'')
-   +'<label for="ghTok">Access code</label><input id="ghTok" type="password" autocomplete="off" placeholder="github_pat_…">'
-   +'<div class="btnrow"><button class="btn" id="ghGo">Open my kitchen</button></div>'
+  if(GH.mode==="check") return '<div class="empty" style="padding-top:60px">Loading&hellip;</div>';
+  var err=GH.error?'<div class="note">'+esc(GH.error)+'</div>':'';
+  if(GH.mode==="pw") return '<div class="gate"><h2>Norton Kitchen</h2>'
+   +'<p class="sub">Type the household password to open your recipes and meal plan. You only need to do this once on each device.</p>'+err
+   +'<label for="ghPw">Password</label><input id="ghPw" type="password" autocomplete="current-password">'
+   +'<div class="btnrow"><button class="btn" id="ghPwGo">Open my kitchen</button></div>'
+   +'<details class="how"><summary>Set up again with a new access code</summary>'
+   +'<p class="sub">Only needed if the GitHub access code was replaced or has expired.</p><div class="btnrow"><button class="btn ghost" id="ghReSetup">Set up again</button></div></details></div>';
+  return '<div class="gate"><h2>Set up Norton Kitchen</h2>'
+   +'<p class="sub">This is done once. Paste your GitHub access code and choose a household password. After that, every device just needs the password.</p>'+err
+   +'<label for="ghTok">GitHub access code</label><input id="ghTok" type="password" autocomplete="off" placeholder="github_pat_…">'
+   +'<label for="ghNew">Choose a password</label><input id="ghNew" type="password" autocomplete="new-password">'
+   +'<label for="ghNew2">Type it again</label><input id="ghNew2" type="password" autocomplete="new-password">'
+   +'<div class="btnrow"><button class="btn" id="ghSetGo">Save and open my kitchen</button></div>'
    +'<details class="how"><summary>How do I get an access code?</summary><ol>'
    +'<li>On GitHub, open Settings, then Developer settings, then Personal access tokens, then <b>Fine-grained tokens</b>.</li>'
    +'<li>Choose <b>Generate new token</b>. Name it "Norton Kitchen" and pick an expiry date.</li>'
-   +'<li>Under Repository access choose <b>Only select repositories</b> and pick <b>'+esc(GH.repo)+'</b>.</li>'
+   +'<li>Under Repository access choose <b>Only select repositories</b> and pick <b>both</b> '+esc(GH.repo)+' and '+esc(GH.app)+'.</li>'
    +'<li>Under Permissions, set <b>Contents</b> to <b>Read and write</b>.</li>'
    +'<li>Generate it, copy the code that starts with github_pat_, and paste it above.</li></ol>'
-   +'<p class="sub">The code is saved only in this browser. Use "Forget this device" in Settings to remove it.</p></details></div>';
+   +'<p class="sub">The code is stored locked with your password, so only someone with the password can use it. Pick a password that is not easy to guess.</p></details></div>';
 }
-const GH={owner:"Alex29752",repo:"norton-kitchen-data",token:null,ready:false,sha:null,error:"",urls:{},q:[],busy:0,at:""};
+const GH={owner:"Alex29752",repo:"norton-kitchen-data",app:"Norton-Kitchen",mode:"check",token:null,ready:false,sha:null,error:"",urls:{},q:[],busy:0,at:""};
 const GHMODE=!(window.claude&&window.claude.use)&&location.protocol!=="file:"||/[?&]gh=1/.test(location.search);
 function ghHeaders(raw){ var h={"Authorization":"Bearer "+GH.token,"X-GitHub-Api-Version":"2022-11-28"};
   h["Accept"]=raw?"application/vnd.github.raw+json":"application/vnd.github+json"; return h }
@@ -1762,7 +1773,7 @@ new MutationObserver(function(){ hydrate() }).observe(document.body,{childList:t
 async function ghLoad(){
   setStatus("saving","Syncing");
   var rec=await ghGetJSON("recipes.json");
-  if(!rec) throw {code:"norecipes"};
+  if(!rec){ var rr=await fetch("https://api.github.com/repos/"+GH.owner+"/"+GH.repo,{headers:ghHeaders(false),cache:"no-store"}); throw {code:rr.ok?"norecipes":"auth"} }
   SEED={v:1,recipes:rec.data.recipes||rec.data,seedv:rec.data.seedv||2,snacks:{}};
   var st=await ghGetJSON("state.json"), changed=false;
   if(st&&st.data&&st.data.v&&st.data.recipes){ GH.sha=st.sha; changed=upgrade(st.data,SEED); STATE=st.data }
@@ -1799,19 +1810,60 @@ async function ghStart(){
     if(autoPlan()) changed=true; render(); fromHash(); GH.at=stamp(); setStatus("saved","Synced"); if(changed) queueSave();
   }catch(e){
     GH.ready=false;
-    GH.error=e&&e.code==="auth"?"That code didn't work. Check it hasn't expired and that it has Contents read and write access to "+GH.repo+".":
+    GH.error=e&&e.code==="auth"?"That access code can't open "+GH.repo+". Check it hasn't expired, that "+GH.repo+" is ticked under Repository access, and that Contents is set to Read and write.":
       e&&e.code==="norecipes"?"The recipes aren't in "+GH.owner+"/"+GH.repo+" yet.":"Couldn't reach GitHub. Check your connection and try again.";
-    if(e&&e.code==="auth"){ try{ localStorage.removeItem("nk_token") }catch(x){} GH.token=null }
+    if(e&&e.code==="auth"){ try{ localStorage.removeItem("nk_token") }catch(x){} GH.token=null; GH.mode=GH.key?"pw":"setup";
+      if(GH.key) GH.error="The saved access code no longer works. Choose \"Set up again\" below and paste a new one." }
     setStatus("err","Not connected"); render();
   }
 }
+function b64e(u){ var s="";u=new Uint8Array(u);for(var i=0;i<u.length;i++)s+=String.fromCharCode(u[i]);return btoa(s) }
+function b64u(s){ var b=atob(s),u=new Uint8Array(b.length);for(var i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return u }
+async function pwKey(pw,salt,it){ var base=await crypto.subtle.importKey("raw",new TextEncoder().encode(pw),"PBKDF2",false,["deriveKey"]);
+  return crypto.subtle.deriveKey({name:"PBKDF2",salt:salt,iterations:it,hash:"SHA-256"},base,{name:"AES-GCM",length:256},false,["encrypt","decrypt"]) }
+async function lockToken(tok,pw){ var salt=crypto.getRandomValues(new Uint8Array(16)),iv=crypto.getRandomValues(new Uint8Array(12)),it=600000;
+  var ct=await crypto.subtle.encrypt({name:"AES-GCM",iv:iv},await pwKey(pw,salt,it),new TextEncoder().encode(tok));
+  return {v:1,kdf:"PBKDF2-SHA256",it:it,salt:b64e(salt),iv:b64e(iv),ct:b64e(ct)} }
+async function unlockToken(k,pw){ var pt=await crypto.subtle.decrypt({name:"AES-GCM",iv:b64u(k.iv)},await pwKey(pw,b64u(k.salt),k.it),b64u(k.ct)); return new TextDecoder().decode(pt) }
+async function ghFindKey(){
+  try{ var r=await fetch("key.json?t="+Date.now(),{cache:"no-store"}); if(r.ok){ var k=await r.json(); if(k&&k.ct) return k } }catch(e){}
+  try{ var r2=await fetch("https://api.github.com/repos/"+GH.owner+"/"+GH.app+"/contents/key.json?t="+Date.now(),{headers:{"Accept":"application/vnd.github.raw+json"},cache:"no-store"});
+    if(r2.ok){ var k2=await r2.json(); if(k2&&k2.ct) return k2 } }catch(e){}
+  return null }
+async function ghPwGo(){ var el=$("#ghPw"), pw=((el||{}).value||""); if(!pw){ if(el) el.focus(); return }
+  GH.error=""; var b=$("#ghPwGo"); if(b){ b.disabled=true; b.textContent="Opening…" }
+  try{ GH.token=await unlockToken(GH.key,pw) }catch(e){ GH.error="That password isn't right. Try again."; render(); var f=$("#ghPw"); if(f) f.focus(); return }
+  try{ localStorage.setItem("nk_token",GH.token) }catch(e){} ghStart() }
+async function ghSetGo(){ var tok=(($("#ghTok")||{}).value||"").trim(), a=(($("#ghNew")||{}).value||""), c=(($("#ghNew2")||{}).value||"");
+  GH.error="";
+  if(!tok){ GH.error="Paste your GitHub access code first."; render(); return }
+  if(a.length<6){ GH.error="Choose a password of at least 6 characters."; render(); return }
+  if(a!==c){ GH.error="The two passwords don't match."; render(); return }
+  var b=$("#ghSetGo"); if(b){ b.disabled=true; b.textContent="Saving…" }
+  GH.token=tok;
+  try{ var rr=await fetch("https://api.github.com/repos/"+GH.owner+"/"+GH.repo,{headers:ghHeaders(false),cache:"no-store"});
+    if(!rr.ok){ GH.token=null; GH.error="That access code can't open "+GH.repo+". Check that "+GH.repo+" is ticked under Repository access and Contents is set to Read and write."; render(); return }
+    var lk=await lockToken(tok,a), url="https://api.github.com/repos/"+GH.owner+"/"+GH.app+"/contents/key.json", sha;
+    var g=await fetch(url+"?t="+Date.now(),{headers:ghHeaders(false),cache:"no-store"}); if(g.ok) sha=(await g.json()).sha;
+    var body={message:"Save locked access code",content:btoa(JSON.stringify(lk,null,1))}; if(sha) body.sha=sha;
+    var w=await fetch(url,{method:"PUT",headers:Object.assign(ghHeaders(false),{"Content-Type":"application/json"}),body:JSON.stringify(body)});
+    if(!w.ok){ GH.token=null; GH.error="The code opens "+GH.repo+" but can't save the password to "+GH.app+". Tick "+GH.app+" under Repository access too (Contents: Read and write), then try again."; render(); return }
+    GH.key=lk;
+  }catch(e){ GH.token=null; GH.error="Couldn't reach GitHub. Check your connection and try again."; render(); return }
+  try{ localStorage.setItem("nk_token",tok) }catch(e){} ghStart() }
+async function ghBoot(){
+  try{ GH.token=localStorage.getItem("nk_token") }catch(e){}
+  GH.key=await ghFindKey();
+  if(GH.token){ GH.mode=GH.key?"pw":"setup"; ghStart(); return }
+  GH.mode=GH.key?"pw":"setup"; setStatus("idle","Not connected"); render(); var f=$(GH.key?"#ghPw":"#ghTok"); if(f) f.focus() }
 function ghConnect(){ var v=(($("#ghTok")||{}).value||"").trim(); if(!v){ var el=$("#ghTok"); if(el) el.focus(); return }
   GH.token=v; try{ localStorage.setItem("nk_token",v) }catch(e){} ghStart() }
 
 applyTheme();
 if(GHMODE){
-  try{ GH.token=localStorage.getItem("nk_token") }catch(e){}
-  if(GH.token) ghStart(); else { setStatus("idle","Not connected"); render() }
+  render(); ghBoot();
+  document.addEventListener("keydown",function(e){ if(e.key!=="Enter") return; var id=e.target&&e.target.id;
+    if(id==="ghPw") ghPwGo(); else if(id==="ghTok"||id==="ghNew"||id==="ghNew2") ghSetGo() });
 } else {
 upgrade(STATE,SEED); render(); setStatus("idle","Loading"); setTimeout(fromHash,0);
 (async function(){
